@@ -1,4 +1,4 @@
-import openseespy.opensees as ops
+from libdenavit import opensees as ops
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from matplotlib.colors import Normalize

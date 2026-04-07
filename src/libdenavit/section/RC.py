@@ -2,7 +2,7 @@ import warnings
 from math import sqrt, pi, ceil, exp, sin, log10
 import matplotlib.pyplot as plt
 import numpy as np
-import openseespy.opensees as ops
+from libdenavit import opensees as ops
 from libdenavit.OpenSees import circ_patch_2d, obround_patch_2d, obround_patch_2d_confined
 from libdenavit.section import AciStrainCompatibility, FiberSection, ACI_phi
 
@@ -33,6 +33,8 @@ class RC:
         self.tD = tD
         self.Tcr = Tcr
         self.tcast = tcast
+        self.has_concrete = True
+        self.has_steel = True
 
 
 
@@ -538,6 +540,41 @@ class RC:
         elif EI_type.lower() == "gross":
             return self.EIgross(axis)
 
+        if EI_type == "proposed_1_1":
+            Mn = self.Mn(axis)
+            if M / Mn <= 0.95:
+                return 0.4 * self.Ec * self.Ig(axis) / (1 + betadns)
+            else:
+                return 1 * self.Es * self.Isr(axis) / (1 + betadns)
+
+        if EI_type == "proposed_1_2":
+            Mn = self.Mn(axis)
+            if M / Mn <= 0.95:
+                return (0.2 * self.Ec * self.Ig(axis) + self.Es * self.Isr(axis)) / (1 + betadns)
+            else:
+                return 1 * self.Es * self.Isr(axis) / (1 + betadns)
+
+        elif EI_type == "proposed_2":
+            EI_gross = self.Ec * self.Ig(axis)
+            P_P0 = P / self.p0
+            P0 = self.p0
+            As_Ag = self.Asr / self.Ag
+            r = np.sqrt(self.Ig(axis) / self.Ag)
+            L = col.length
+
+            if type(col).__name__ == 'NonSwayColumn2d':
+                K = 1
+                EI = (0.45 * P / P0 + 0.35 * ((K * L / r) / 100) ** 1.85 * np.sin(
+                    np.pi * P / P0)) * EI_gross + 0.3* self.Es * self.Isr(axis) / (1 + betadns)
+                return EI
+
+            elif type(col).__name__ == 'SwayColumn2d':
+                K = col.effective_length_factor(0.4 * EI_gross)
+                EI = (0.45 * P / P0 + 0.35 * ((K * L / r) / 100) ** 1.85 * np.sin(
+                    np.pi * P / P0)) * EI_gross + 0.3* self.Es * self.Isr(axis) / (1 + betadns)
+                return EI
+
+        
         else:
             try:
                 import importlib
@@ -925,14 +962,15 @@ class RC:
                     warnings.warn("Default value of tcast (0) used for creep and shrinkage material")
 
             if confinement:
-                ops.uniaxialMaterial('Creep', cover_concrete_creep_material_id, cover_concrete_material_id,
+                ops.uniaxialMaterial('CreepShrinkageACI209', cover_concrete_creep_material_id, cover_concrete_material_id,
                                      self.tD, shrinkagedata['eps_sh_u'], shrinkagedata['psish'], self.Tcr,
                                      creepdata['phi_u'], creepdata['psicr1'], creepdata['psicr2'], self.tcast)
-                ops.uniaxialMaterial('Creep', core_concrete_creep_material_id, core_concrete_material_id,
+                
+                ops.uniaxialMaterial('CreepShrinkageACI209', core_concrete_creep_material_id, core_concrete_material_id,
                                      self.tD, shrinkagedata['eps_sh_u'], shrinkagedata['psish'], self.Tcr,
                                      creepdata['phi_u'], creepdata['psicr1'], creepdata['psicr2'], self.tcast)
             else:
-                ops.uniaxialMaterial('Creep', concrete_creep_material_id, concrete_material_id,
+                ops.uniaxialMaterial('CreepShrinkageACI209', concrete_creep_material_id, concrete_material_id,
                                      self.tD, shrinkagedata['eps_sh_u'], shrinkagedata['psish'], self.Tcr,
                                      creepdata['phi_u'], creepdata['psicr1'], creepdata['psicr2'], self.tcast)
 
