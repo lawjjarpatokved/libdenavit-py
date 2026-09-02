@@ -244,7 +244,9 @@ class NonSwayColumn2d(Column2d):
                                                 section_id=section_id, section_args=section_args,
                                                 disp_incr_factor=nonprop_disp_incr_factor)
                 P.append(iP)
-                M1.append(results.applied_moment_top_at_limit_point)
+                M1.append(self._applied_first_order_moment(
+                    results.applied_moment_top_at_limit_point,
+                    results.applied_moment_bot_at_limit_point))
                 M2.append(results.maximum_abs_moment_at_limit_point)
                 if full_results:
                     M1t_path.append(results.applied_moment_top)
@@ -282,7 +284,9 @@ class NonSwayColumn2d(Column2d):
         results = [self.run_ops_analysis('proportional_limit_point', e=e, **kwargs) for e
                    in e_list]
         P = [result.applied_axial_load_at_limit_point for result in results]
-        M1 = [result.applied_moment_top_at_limit_point for result in results]
+        M1 = [self._applied_first_order_moment(result.applied_moment_top_at_limit_point,
+                                              result.applied_moment_bot_at_limit_point)
+              for result in results]
         M2 = [result.maximum_abs_moment_at_limit_point for result in results]
 
         return {'P': np.array(P), 'M1': np.array(M1), 'M2': np.array(M2)}
