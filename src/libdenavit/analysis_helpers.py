@@ -1,6 +1,19 @@
 from libdenavit import opensees as ops
 
 
+EIGENVALUE_LIMIT = 'Eigenvalue Limit Reached'
+DEFORMATION_LIMIT = 'Deformation Limit Reached'
+CONCRETE_COMPRESSION_STRAIN_LIMIT = 'Concrete Compression Strain Limit Reached'
+STEEL_COMPRESSION_STRAIN_LIMIT = 'Steel Compression Strain Limit Reached'
+STEEL_TENSILE_STRAIN_LIMIT = 'Steel Tensile Strain Limit Reached'
+
+# Earlier spellings, kept so stored results and outside code still resolve.
+LEGACY_LIMIT_MESSAGES = {
+    'Extreme Compressive Concrete Fiber Strain Limit Reached': CONCRETE_COMPRESSION_STRAIN_LIMIT,
+    'Extreme Steel Fiber Strain Limit Reached': STEEL_TENSILE_STRAIN_LIMIT,
+}
+
+
 def try_analysis_options():
     """
     Tries different analysis algorithms and tolerances in OpenSees.
@@ -140,24 +153,50 @@ def check_analysis_limits(results, **limits):
     section_type = limits.get('section_type', 'RC')
 
     if eigenvalue_limit is not None and results.lowest_eigenvalue[-1] < eigenvalue_limit:
-        return 'Eigenvalue Limit Reached'
+        return EIGENVALUE_LIMIT
 
     if deformation_limit is not None and results.maximum_abs_disp[-1] > deformation_limit:
-            return 'Deformation Limit Reached'
+            return DEFORMATION_LIMIT
     
     if section_type == "RC":
         # For RC: Check concrete compression and steel tension
         if concrete_strain_limit is not None and results.maximum_concrete_compression_strain[-1] < concrete_strain_limit:
-            return 'Concrete Compression Strain Limit Reached'
+            return CONCRETE_COMPRESSION_STRAIN_LIMIT
         
         if steel_strain_limit is not None and results.maximum_steel_strain[-1] > steel_strain_limit:
-            return 'Steel Tensile Strain Limit Reached'
+            return STEEL_TENSILE_STRAIN_LIMIT
         
     elif section_type == "I_shape":
         # compression strains are negative; exceed limit if magnitude > steel_strain_limit
         if steel_strain_limit is not None and results.maximum_compression_strain[-1] < -steel_strain_limit:
-            return 'Steel Compression Strain Limit Reached'
+            return STEEL_COMPRESSION_STRAIN_LIMIT
         if steel_strain_limit is not None and results.maximum_tensile_strain[-1] > steel_strain_limit:
-            return 'Steel Tensile Strain Limit Reached'
+            return STEEL_TENSILE_STRAIN_LIMIT
 
     return None
+
+
+def adapt_step_factor(step_factor, base_factor, recovered_div=None,
+                      growth=2.0, min_ratio=1e-6):
+    """
+    Step factor for the next analysis increment.
+
+    When an increment will not converge, the analysis retries it with a
+    smaller step. This decides what the increment after that should use.
+
+    - The last increment only converged after its step was divided by
+      recovered_div. Stay small, because the full step just failed and
+      retrying it would fail the same way. The step is not allowed below
+      min_ratio * base_factor, so it cannot shrink to nothing.
+    - The last increment converged on its own. Multiply the step by growth
+      so it climbs back toward base_factor, the step originally asked for,
+      and never past it.
+
+    The result is a plain multiplier, not a length or a load, so the same
+    number works for a DisplacementControl step or a LoadControl step.
+    """
+    if recovered_div:
+        return max(base_factor * min_ratio, step_factor / recovered_div)
+    return min(base_factor, step_factor * growth)
+
+

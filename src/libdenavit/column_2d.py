@@ -1,12 +1,25 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from libdenavit.OpenSees import AnalysisResults
 from libdenavit import interpolate_list, find_limit_point_in_list
+from libdenavit.analysis_helpers import (
+    CONCRETE_COMPRESSION_STRAIN_LIMIT, DEFORMATION_LIMIT, EIGENVALUE_LIMIT,
+    LEGACY_LIMIT_MESSAGES, STEEL_COMPRESSION_STRAIN_LIMIT, STEEL_TENSILE_STRAIN_LIMIT,
+)
 import warnings
 
-class Column2d:
+class Column2d(ABC):
     """
     A base class for 2D column models.
     """
+    # Keyword arguments consumed by __init__. Subclasses extend this with their own,
+    # which lets a misspelled or unsupported argument be reported instead of silently
+    # ignored.
+    _INIT_KWARGS = frozenset({
+        'axis', 'dxo', 'include_initial_geometric_imperfections',
+        'ops_n_elem', 'ops_element_type',
+        'ops_geom_transf_type', 'ops_integration_points',
+    })
+
     def __init__(self, section, length, **kwargs):
         """
         Initializes common properties for a column.
@@ -28,6 +41,12 @@ class Column2d:
         self.dxo = kwargs.get('dxo', 0.0)
         self.include_initial_geometric_imperfections = kwargs.get('include_initial_geometric_imperfections', True)
         
+        unknown = set(kwargs) - self._INIT_KWARGS
+        if unknown:
+            warnings.warn(f'{type(self).__name__} ignoring unrecognized keyword '
+                          f'argument(s): {sorted(unknown)}')
+
+
     def _init_results(self, attrs: list) -> AnalysisResults:
         """Create an AnalysisResults with the given attribute names as empty lists."""
         results = AnalysisResults()
@@ -49,6 +68,7 @@ class Column2d:
             'P': kwargs.get('P', 0),
             'num_steps_vertical': kwargs.get('num_steps_vertical', 1000),
             'disp_incr_factor': kwargs.get('disp_incr_factor', 1e-5),
+            'axial_control': kwargs.get('axial_control', 'load'),
             'eigenvalue_limit': kwargs.get('eigenvalue_limit', 0),
             'deformation_limit': kwargs.get('deformation_limit', 'default'),
             'concrete_strain_limit': kwargs.get('concrete_strain_limit', -0.01),
@@ -62,7 +82,11 @@ class Column2d:
         # Set default deformation limit using subclass override
         if config['deformation_limit'] == 'default':
             config['deformation_limit'] = self._get_default_deformation_limit()
-            
+
+        if config['axial_control'] not in ('load', 'displacement'):
+            raise ValueError(f"axial_control must be 'load' or 'displacement', "
+                             f"got {config['axial_control']!r}")
+
         return config
     
     def _initialize_results(self):
@@ -81,39 +105,70 @@ class Column2d:
         results.maximum_abs_moment_at_limit_point = interpolate_list(results.maximum_abs_moment, ind, x)
         results.maximum_abs_disp_at_limit_point = interpolate_list(results.maximum_abs_disp, ind, x)
     
-    def _find_limit_point(self, results, config, analysis_type=None):
-        """Find and set limit point values."""
-        if 'Analysis Failed' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-            warnings.warn('Analysis failed')
-        elif 'Eigenvalue Limit' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.lowest_eigenvalue, config['eigenvalue_limit'])
-        elif 'Extreme Compressive Concrete Fiber Strain Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_concrete_compression_strain, config['concrete_strain_limit'])
-        elif 'Extreme Steel Fiber Strain Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_steel_strain, config['steel_strain_limit'])
-        elif 'Deformation Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_abs_disp, config['deformation_limit'])
-        elif 'Load Drop Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-        elif 'Analysis failed while maintaining sustained load' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-        elif 'Analysis failed before full sustained load is reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-        elif 'Analysis failed on the first step of maintaining sustained load' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-        else:
-            # No message at all → set one & fallback
-            results.exit_message = 'Analysis Ended Without Explicit Limit'
-            ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
+    def _peak_response(self, results, analysis_type=None):
+        """Series and target for messages that name no quantity: the peak applied load.
 
+        Override where a different load drives the analysis.
+        """
+        return results.applied_axial_load, max(results.applied_axial_load)
+
+    def _limit_point_sources(self, results, config):
+        """Map each limit message to the (series, target) whose crossing sets the limit point."""
+        is_rc = type(self.section).__name__ == 'RC'
+        return {
+            EIGENVALUE_LIMIT:
+                (results.lowest_eigenvalue, config['eigenvalue_limit']),
+            DEFORMATION_LIMIT:
+                (results.maximum_abs_disp, config['deformation_limit']),
+            CONCRETE_COMPRESSION_STRAIN_LIMIT:
+                (results.maximum_concrete_compression_strain, config['concrete_strain_limit']),
+            # Compression strains are negative, so the limit is crossed going down.
+            STEEL_COMPRESSION_STRAIN_LIMIT:
+                (results.maximum_compression_strain, -config['steel_strain_limit']),
+            # RC records the bar strain, I_shape the extreme tensile fiber strain.
+            STEEL_TENSILE_STRAIN_LIMIT:
+                (results.maximum_steel_strain if is_rc else results.maximum_tensile_strain,
+                 config['steel_strain_limit']),
+        }
+
+    def _find_limit_point(self, results, config, analysis_type=None):
+        """Locate the limit point and store its values on results.
+
+        A message naming a quantity is resolved through _limit_point_sources, so the
+        limit point is interpolated at the exact crossing. Everything else, including
+        analysis failures and load drops, falls back to the peak applied load.
+        """
+        if not results.exit_message:
+            results.exit_message = 'Analysis Ended Without Explicit Limit'
+
+        if 'analysis failed' in results.exit_message.lower():
+            warnings.warn(f'Analysis failed: {results.exit_message}')
+
+        message = LEGACY_LIMIT_MESSAGES.get(results.exit_message, results.exit_message)
+        source = self._limit_point_sources(results, config).get(message)
+        if source is None:
+            source = self._peak_response(results, analysis_type)
+
+        ind, x = find_limit_point_in_list(*source)
         self._set_limit_point_values(results, ind, x)
     
     def run_ops_analysis(self, analysis_type, **kwargs):
         """Template method for running OpenSees analysis."""
         config = self._extract_analysis_config(**kwargs)
-        
-        self.build_ops_model(config['section_id'], config['section_args'], config['section_kwargs'], 
+
+        if (analysis_type.lower() == 'proportional_limit_point' and config['e'] == 0
+                and not self.dxo and not getattr(self, 'Dxo', 0)):
+            warnings.warn(
+                'Running a proportional_limit_point analysis with e=0 (axial-only loading) and '
+                'no initial geometric imperfection (dxo=0, and Dxo=0 if applicable): the model is '
+                'perfectly symmetric, so there is nothing to trigger a second-order (buckling) '
+                'response and the analysis may fail to converge. If you intend to capture buckling '
+                'behavior, pass a nonzero dxo (e.g. dxo=length/1000) when constructing the column -- '
+                'or, for a SwayColumn2d, a nonzero Dxo, since dxo alone is zero at the sway-controlled '
+                'top node.'
+            )
+
+        self.build_ops_model(config['section_id'], config['section_args'], config['section_kwargs'],
                             creep_props_dict=config['creep_props_dict'],
                             shrinkage_props_dict=config['shrinkage_props_dict'])
         

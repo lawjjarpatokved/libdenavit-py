@@ -604,7 +604,7 @@ class WideFlangeMember_AISC2022:
         
         if Lb <= Lp:
             pass
-        if Lb <= Lr:
+        elif Lb <= Lr:
             Mn_LTB = Cb*((self.Fy*self.section.Zx)-(((self.Fy*self.section.Zx)-(0.7*self.Fy*self.section.Sx))*((Lb-Lp)/(Lr-Lp))))
             Mn = min(Mn,Mn_LTB)
         else:

@@ -29,8 +29,8 @@ def run_single_analysis(L,residual_stress,material_options):
         eb=0.,
         axis='y',
         dxo=L/1000.0,
-        n_elem=8,
-        element_type='mixedBeamColumn',
+        ops_n_elem=8,
+        ops_element_type='mixedBeamColumn',
         ops_geom_transf_type='Corotational',
         ops_integration_points=3,
     )

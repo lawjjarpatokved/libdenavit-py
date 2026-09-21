@@ -170,21 +170,27 @@ class InteractionDiagram2d():
 
 
     def find_x_given_y(self, Y, signX):
+        """Capacity in x at the given y, as a scalar."""
         X_list = []
         if type(Y) in [int, float, np.float64]:
             Y_list = [Y]
         for y in Y_list:
             if signX.lower() in ['+', 'positive', 'pos']:
                 peakX = 1.1 * np.max(self.idx)
+                extreme = np.max
             elif signX.lower() in ['-', 'negative', 'neg']:
                 peakX = 1.1 * np.min(self.idx)
+                extreme = np.min
             else:
                 raise ValueError('signX must be positive or negative')
 
             npts = 10
             pathX = np.linspace(0, peakX, npts)
             pathY = y * np.ones(npts)
-            X_list.append(self.find_intersection(pathX, pathY)[0])
+            crossings = self.find_intersection(pathX, pathY)[0]
+            if isinstance(crossings, (list, tuple, np.ndarray)):
+                crossings = float(extreme(crossings)) if len(crossings) else float('nan')
+            X_list.append(crossings)
 
         if type(Y) in [int, float, np.float64]:
             return X_list[0]

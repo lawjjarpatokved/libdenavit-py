@@ -11,7 +11,11 @@ from libdenavit.analysis_helpers import try_analysis_options, ops_get_section_st
 from libdenavit.column_2d import Column2d
 
 
-class SwayColumn2d(Column2d):   
+class SwayColumn2d(Column2d):
+
+    _INIT_KWARGS = Column2d._INIT_KWARGS | {
+        'Dxo', 'effective_length_factor_override',
+    }
     def __init__(self, section, length, k_bot, k_top, gamma, **kwargs):
         """
             Represents a sway 2D column
@@ -29,8 +33,8 @@ class SwayColumn2d(Column2d):
                           Dxo (float, optional): Lateral displacement at the top. Default is 0.0.
                           effective_length_factor_override (float or None, optional): Override for effective length factor. Default is None.
                           axis (str, optional): Axis. Default is None.
-                          n_elem (int, optional): Number of elements for OpenSees analysis. Default is 8.
-                          element_type (str, optional): Type of OpenSees element. Default is 'mixedBeamColumn'.
+                          ops_n_elem (int, optional): Number of elements for OpenSees analysis. Default is 8.
+                          ops_element_type (str, optional): Type of OpenSees element. Default is 'mixedBeamColumn'.
                           ops_geom_transf_type (str, optional): OpenSees geometric transformation type. Default is 'Corotational'.
                           ops_integration_points (int, optional): Number of integration points for OpenSees analysis. Default is 3.
         """
@@ -76,6 +80,13 @@ class SwayColumn2d(Column2d):
         return config
 
 
+    def _peak_response(self, results, analysis_type=None):
+        """A nonproportional sway analysis is driven by the horizontal load, not the axial."""
+        if analysis_type is not None and analysis_type.lower() == 'nonproportional_limit_point':
+            return results.applied_horizontal_load, max(results.applied_horizontal_load)
+        return results.applied_axial_load, max(results.applied_axial_load)
+
+
     @property
     def lever_arm(self):
         if self.k_bot == 0 and self.k_top > 0:
@@ -88,14 +99,6 @@ class SwayColumn2d(Column2d):
             raise ValueError(f'lever_arm not implemented for k_bot = {self.k_bot} and k_top = {self.k_top}')
 
 
-    def _initialize_results(self):
-        """Initialize analysis results object with required attributes."""
-        # Get base attributes and add Sway-specific ones
-        results = super()._initialize_results()
-        # Add Sway-specific attributes
-        for attr in ['applied_horizontal_load', 'moment_at_top', 'moment_at_bottom']:
-            setattr(results, attr, [])
-        return results
 
 
     def build_ops_model(self, section_id, section_args, section_kwargs, **kwargs):
@@ -122,7 +125,7 @@ class SwayColumn2d(Column2d):
             ops.fix(0, 1, 1, 1)
         elif self.k_bot == 0:
             ops.fix(0, 1, 1, 0)
-        elif type(self.k_bot) in [int, float]:
+        elif isinstance(self.k_bot, (int, float)):
             ops.fix(0, 1, 1, 0)
             ops.node(1000, 0, 0)
             ops.fix(1000, 1, 1, 1)
@@ -133,7 +136,7 @@ class SwayColumn2d(Column2d):
 
         if self.k_top == inf:
             ops.fix(self.ops_n_elem, 0, 0, 1)
-        elif type(self.k_bot) in [int, float]:
+        elif isinstance(self.k_bot, (int, float)):
             ops.node(1001, self.Dxo, self.length)
             ops.fix(1001, 1, 1, 1)
             ops.uniaxialMaterial('Elastic', 1001, self.k_top)
@@ -158,6 +161,8 @@ class SwayColumn2d(Column2d):
 
         if type(self.section).__name__ == "RC":
             self.section.build_ops_fiber_section(section_id, *section_args, **section_kwargs, axis=self.axis)
+        elif type(self.section).__name__ == "I_shape":
+            self.section.build_ops_fiber_section(section_id, *section_args, **section_kwargs, axis=self.axis)
         else:
             raise ValueError(f'Unknown cross section type {type(self.section).__name__}')
 
@@ -167,10 +172,6 @@ class SwayColumn2d(Column2d):
             ops.element(self.ops_element_type, index, index, index + 1, 100, 1)
 
 
-    def _set_limit_point_values(self, results, ind, x):
-        """Override to include horizontal load values."""
-        super()._set_limit_point_values(results, ind, x)
-        results.applied_horizontal_load_at_limit_point = interpolate_list(results.applied_horizontal_load, ind, x)
 
 
     def run_ops_interaction(self, **kwargs):
@@ -319,8 +320,12 @@ class SwayColumn2d(Column2d):
             results.lowest_eigenvalue.append(ops.eigen('-fullGenLapack', 1)[0])
             results.moment_at_top.append(ops.eleForce(self.ops_n_elem - 1, 6))
             results.moment_at_bottom.append(ops.eleForce(0, 3))
-            results.maximum_concrete_compression_strain.append(section_strains[0])
-            results.maximum_steel_strain.append(section_strains[1])
+            if type(self.section).__name__ == "RC":
+                results.maximum_concrete_compression_strain.append(section_strains[0])
+                results.maximum_steel_strain.append(section_strains[1])
+            elif type(self.section).__name__ == "I_shape":
+                results.maximum_compression_strain.append(section_strains[0])
+                results.maximum_tensile_strain.append(section_strains[1])
             if self.axis == 'x':
                 results.curvature.append(section_strains[2])
             elif self.axis == 'y':
@@ -434,8 +439,12 @@ class SwayColumn2d(Column2d):
             results.lowest_eigenvalue.append(ops.eigen('-fullGenLapack', 1)[0])
             results.moment_at_top.append(ops.eleForce(self.ops_n_elem - 1, 6))
             results.moment_at_bottom.append(ops.eleForce(0, 3))
-            results.maximum_concrete_compression_strain.append(section_strains[0])
-            results.maximum_steel_strain.append(section_strains[1])
+            if type(self.section).__name__ == "RC":
+                results.maximum_concrete_compression_strain.append(section_strains[0])
+                results.maximum_steel_strain.append(section_strains[1])
+            elif type(self.section).__name__ == "I_shape":
+                results.maximum_compression_strain.append(section_strains[0])
+                results.maximum_tensile_strain.append(section_strains[1])
             if self.axis == 'x':
                 results.curvature.append(section_strains[2])
             elif self.axis == 'y':
@@ -485,8 +494,12 @@ class SwayColumn2d(Column2d):
             results.lowest_eigenvalue.append(ops.eigen('-fullGenLapack', 1)[0])
             results.moment_at_top.append(ops.eleForce(self.ops_n_elem - 1, 6))
             results.moment_at_bottom.append(ops.eleForce(0, 3))
-            results.maximum_concrete_compression_strain.append(section_strains[0])
-            results.maximum_steel_strain.append(section_strains[1])
+            if type(self.section).__name__ == "RC":
+                results.maximum_concrete_compression_strain.append(section_strains[0])
+                results.maximum_steel_strain.append(section_strains[1])
+            elif type(self.section).__name__ == "I_shape":
+                results.maximum_compression_strain.append(section_strains[0])
+                results.maximum_tensile_strain.append(section_strains[1])
             if self.axis == 'x':
                 results.curvature.append(section_strains[2])
             elif self.axis == 'y':
@@ -652,24 +665,27 @@ class SwayColumn2d(Column2d):
             iP = 0.999 * P_list[0] * (num_points - i - 1) / (num_points - 1)
             iM2_section = id2d.find_x_given_y(iP, 'pos')
 
-            EIeff = self.section.EIeff(self.axis, EI_type, beta_dns, P=iP, M=iM2_section, col=self)
-            k = self.effective_length_factor(EIeff)
-            Pc = pi ** 2 * EIeff / (k * self.length) ** 2
-
-            iM1_list = [0]
-            iM2_list = np.arange(0, iM2_section, iM2_section / 1000)
-
-            for iM2 in iM2_list:
-                EIeff = self.section.EIeff(self.axis, EI_type, beta_dns, P=iP, M=iM2, col=self)
+            trials = []
+            for iM1_trial in np.linspace(0.0, iM2_section, 1000):
+                EIeff = self.section.EIeff(self.axis, EI_type, beta_dns, P=iP, M=iM1_trial, col=self)
                 k = self.effective_length_factor(EIeff)
                 Pc = pi ** 2 * EIeff / (k * self.length) ** 2
-                if Pc_factor * Pc < iP:
-                    break
-                delta_s = max(1 / (1 - (iP) / (Pc_factor * Pc)), 1.0)
-                iM1_list.append(iM2 / delta_s)
+                if Pc_factor * Pc <= iP:
+                    # Unstable at this moment, so there is no valid magnifier. Skip
+                    # rather than stop: EIeff is not monotonic in moment for every
+                    # EI_type, so a larger moment can be stable again.
+                    continue
+                delta_s = max(1 / (1 - iP / (Pc_factor * Pc)), 1.0)
+                iM2_trial = delta_s * iM1_trial
 
-            iM1 = max(iM1_list)
-            iM2 = iM2_list[iM1_list.index(iM1) -1]
+                # The magnified moment still has to fit inside the section.
+                if iM2_trial <= iM2_section:
+                    trials.append((iM1_trial, iM2_trial))
+
+            if trials:
+                iM1, iM2 = max(trials, key=lambda trial: trial[0])
+            else:
+                iM1, iM2 = 0.0, 0.0
             P_list.append(iP)
             M1_list.append(iM1)
             M2_list.append(iM2)
@@ -790,41 +806,7 @@ class SwayColumn2d(Column2d):
                 "EIgross": EIgross}
 
 
-    def _extract_analysis_config(self, **kwargs):
-        """Override to adjust default values for sway analysis."""
-        config = super()._extract_analysis_config(**kwargs)
-        # Adjust defaults for sway analysis if not explicitly provided
-        if 'num_steps_vertical' not in kwargs:
-            config['num_steps_vertical'] = 10
-        if 'disp_incr_factor' not in kwargs:
-            config['disp_incr_factor'] = 5e-05
-        return config
     
     
-    def _find_limit_point(self, results, config, analysis_type):
-        """Find and set limit point values with sway-specific logic."""
-        if 'Analysis Failed' in results.exit_message:
-            if analysis_type.lower() == 'proportional_limit_point':
-                ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-            elif analysis_type.lower() == 'nonproportional_limit_point':
-                ind, x = find_limit_point_in_list(results.applied_horizontal_load, max(results.applied_horizontal_load))
-            warnings.warn('Analysis failed')
-        elif 'Eigenvalue Limit' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.lowest_eigenvalue, config['eigenvalue_limit'])
-        elif 'Extreme Compressive Concrete Fiber Strain Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_concrete_compression_strain, config['concrete_strain_limit'])
-        elif 'Extreme Steel Fiber Strain Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_steel_strain, config['steel_strain_limit'])
-        elif 'Deformation Limit Reached' in results.exit_message:
-            ind, x = find_limit_point_in_list(results.maximum_abs_disp, config['deformation_limit'])
-        elif 'Load Drop Limit Reached' in results.exit_message:
-            if analysis_type.lower() == 'proportional_limit_point':
-                ind, x = find_limit_point_in_list(results.applied_axial_load, max(results.applied_axial_load))
-            elif analysis_type.lower() == 'nonproportional_limit_point':
-                ind, x = find_limit_point_in_list(results.applied_horizontal_load, max(results.applied_horizontal_load))
-        else:
-            raise Exception('Unknown limit point')
-
-        self._set_limit_point_values(results, ind, x)
         
     

@@ -40,8 +40,9 @@ section_kwargs = {}
 
 # Run Analyses
 num_points = 10
-Opensees_results = col.run_ops_interaction(section_args, section_kwargs, num_points)
-AASHTO_results  = col.run_AASHTO_interaction(EI_type='a', section_factored = False, Pc_factor = 1.00)
+Opensees_results = col.run_ops_interaction(section_args=section_args, section_kwargs=section_kwargs,
+                                            num_points=num_points)
+AASHTO_results  = col.run_AASHTO_interaction('aci-a', section_factored=False, Pc_factor=1.00)
 # Make Plot
 fig = plt.figure()
 plt.plot(Opensees_results["M1"], Opensees_results["P"], color='tab:blue',   marker='x', linestyle='--', label='$M_1$ (OpenSees)')
